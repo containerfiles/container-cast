@@ -18,6 +18,7 @@ let package = Package(
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ContainerizationEXT4", package: "containerization"),
+                .product(name: "ContainerizationArchive", package: "containerization"),
             ]
         ),
         .executableTarget(

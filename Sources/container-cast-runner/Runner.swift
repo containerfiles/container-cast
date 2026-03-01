@@ -3,6 +3,8 @@ import Foundation
 @main
 struct Runner {
     static func main() async {
+        PayloadExtractor.cleanStaleDirs()
+
         do {
             let extractor = PayloadExtractor()
             let payload = try extractor.extract()

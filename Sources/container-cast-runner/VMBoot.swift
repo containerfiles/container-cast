@@ -22,6 +22,9 @@ struct VMBoot {
         let metadata = payload.metadata
         log.info("Booting VM '\(metadata.name, privacy: .public)'")
 
+        // Clean up extracted payload when done — nothing persists
+        defer { try? FileManager.default.removeItem(at: payload.directory) }
+
         // Kernel
         let kernel = Kernel(path: payload.kernelPath, platform: .linuxArm)
 
@@ -49,7 +52,7 @@ struct VMBoot {
         // Networking
         var networkManager: ContainerManager.VmnetNetwork?
         var iface: (any Interface)?
-        let containerID = "cast-\(UUID().uuidString.prefix(8))"
+        let containerID = payload.directory.lastPathComponent
 
         if options.network {
             var net = try ContainerManager.VmnetNetwork()
@@ -184,6 +187,8 @@ struct VMBoot {
         log.info("VM exited with code \(exitStatus.exitCode)")
         return exitStatus.exitCode
     }
+
+
 }
 
 enum RunnerError: LocalizedError {

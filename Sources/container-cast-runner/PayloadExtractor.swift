@@ -1,23 +1,19 @@
-import CryptoKit
 import Foundation
 import os
 
-/// Reads the embedded payload from the runner's own executable and extracts to cache.
+/// Reads the embedded payload from the runner's own executable and extracts to a temporary directory.
 struct PayloadExtractor {
     private let log = Logger(subsystem: "com.containerfiles.container-cast", category: "extractor")
-
-    static let cacheRoot = FileManager.default.urls(
-        for: .cachesDirectory, in: .userDomainMask
-    ).first!.appendingPathComponent("com.containerfiles.container-cast")
 
     struct ExtractedPayload {
         let kernelPath: URL
         let initfsPath: URL
         let rootfsPath: URL
+        let directory: URL
         let metadata: PayloadMetadata
     }
 
-    /// Extract payload from the running binary, using cache when possible.
+    /// Extract payload from the running binary into an ephemeral temp directory.
     func extract() throws -> ExtractedPayload {
         let execURL = Self.resolveExecutablePath()
         let handle = try FileHandle(forReadingFrom: execURL)
@@ -44,43 +40,25 @@ struct PayloadExtractor {
         }
         let trailer = try PayloadTrailer.decode(from: trailerData)
 
-        // Compute cache key from trailer bytes
-        let cacheKey = SHA256.hash(data: trailerData)
-            .map { String(format: "%02x", $0) }.joined()
-        let cacheDir = Self.cacheRoot.appendingPathComponent(String(cacheKey.prefix(16)))
-
-        // Always read metadata from the binary — it's tiny and the cache key
-        // (trailer SHA256) doesn't cover it, so caching metadata causes stale reads
-        // when the same image is recast with different flags.
+        // Read metadata
         let metadataOffset = trailer.rootfsOffset + trailer.rootfsSize
         let metadataSize = trailerOffset - metadataOffset
         handle.seek(toFileOffset: metadataOffset)
         let metadataData = handle.readData(ofLength: Int(metadataSize))
         let metadata = try JSONDecoder().decode(PayloadMetadata.self, from: metadataData)
 
+        // Extract to ephemeral temp directory
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cast-\(UUID().uuidString.prefix(8).lowercased())")
         let fm = FileManager.default
-        let kernelPath = cacheDir.appendingPathComponent("vmlinux")
-        let initfsPath = cacheDir.appendingPathComponent("initfs.ext4")
-        let rootfsPath = cacheDir.appendingPathComponent("rootfs.ext4")
-
-        // Check cache validity (heavy files only — kernel, initfs, rootfs)
-        if fm.fileExists(atPath: kernelPath.path)
-            && fm.fileExists(atPath: initfsPath.path)
-            && fm.fileExists(atPath: rootfsPath.path)
-        {
-            log.info("Using cached payload at \(cacheDir.path, privacy: .public)")
-            return ExtractedPayload(
-                kernelPath: kernelPath,
-                initfsPath: initfsPath,
-                rootfsPath: rootfsPath,
-                metadata: metadata
-            )
-        }
-
-        // Extract fresh
-        log.info("Extracting payload to \(cacheDir.path, privacy: .public)")
-        try fm.createDirectory(at: cacheDir, withIntermediateDirectories: true,
+        try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
+
+        let kernelPath = tmpDir.appendingPathComponent("vmlinux")
+        let initfsPath = tmpDir.appendingPathComponent("initfs.ext4")
+        let rootfsPath = tmpDir.appendingPathComponent("rootfs.ext4")
+
+        log.info("Extracting payload to \(tmpDir.path, privacy: .public)")
 
         try extractChunk(
             handle: handle,
@@ -94,8 +72,6 @@ struct PayloadExtractor {
             size: trailer.initfsSize,
             to: initfsPath
         )
-
-        // Rootfs uses sparse-aware format
         try extractSparseChunk(
             handle: handle,
             offset: trailer.rootfsOffset,
@@ -107,6 +83,7 @@ struct PayloadExtractor {
             kernelPath: kernelPath,
             initfsPath: initfsPath,
             rootfsPath: rootfsPath,
+            directory: tmpDir,
             metadata: metadata
         )
     }
@@ -202,6 +179,24 @@ struct PayloadExtractor {
         }
 
         log.info("Sparse rootfs extracted: \(totalFileSize) logical, \(regions.count) data regions")
+    }
+
+    /// Remove stale cast temp directories older than 1 hour.
+    /// Legitimate extraction completes in seconds — anything older is orphaned.
+    static func cleanStaleDirs() {
+        let fm = FileManager.default
+        let tmpDir = NSTemporaryDirectory()
+        guard let contents = try? fm.contentsOfDirectory(atPath: tmpDir) else { return }
+        let cutoff = Date().addingTimeInterval(-3600)
+
+        for name in contents where name.hasPrefix("cast-") {
+            let path = (tmpDir as NSString).appendingPathComponent(name)
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let created = attrs[.creationDate] as? Date,
+                  created < cutoff
+            else { continue }
+            try? fm.removeItem(atPath: path)
+        }
     }
 
     /// Resolve the absolute path of the running executable.

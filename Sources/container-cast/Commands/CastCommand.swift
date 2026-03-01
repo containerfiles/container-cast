@@ -1,6 +1,7 @@
 import ArgumentParser
 
 import Containerization
+import ContainerizationArchive
 import ContainerizationEXT4
 import ContainerizationOCI
 import ContainerizationOS
@@ -102,17 +103,20 @@ struct CastCommand: AsyncParsableCommand {
         let imgEnv = imageConfig?.env ?? []
         let imgWorkdir = imageConfig?.workingDir ?? "/"
 
-        // 3. Unpack image to EXT4
-        //    Size the filesystem to fit the content. The compressed layer sizes from
-        //    the manifest are a lower bound — uncompressed content is typically 2-3x.
-        //    We use 4x compressed size + 32 MB overhead for ext4 metadata as a safe estimate.
-        print(styled("Unpacking to EXT4...", .dim))
+        // 3. Flatten OCI layers into a single tar, then unpack to EXT4.
+        //    Flattening resolves whiteouts (cross-layer deletions) before EXT4 creation,
+        //    avoiding a corruption bug in EXT4.Formatter.unlink() that crashes VMs on boot.
+        print(styled("Flattening layers...", .dim))
         let rootfsPath = tempDir.appendingPathComponent("rootfs.ext4")
-        let manifest = try await imageEntry.manifest(for: .current)
-        let compressedSize = manifest.layers.reduce(UInt64(0)) { $0 + UInt64($1.size) }
-        let estimatedSize = max(compressedSize * 4 + 32.mib(), 64.mib())
-        let unpacker = EXT4Unpacker(blockSizeInBytes: estimatedSize)
-        _ = try await unpacker.unpack(imageEntry, for: .current, at: rootfsPath)
+        let flatTarPath = tempDir.appendingPathComponent("rootfs-flat.tar")
+        let flattener = LayerFlattener()
+        let uncompressedSize = try await flattener.flatten(image: imageEntry, platform: .current, to: flatTarPath)
+
+        print(styled("Unpacking to EXT4...", .dim))
+        let ext4Size = max(uncompressedSize + uncompressedSize / 4 + 32.mib(), 64.mib())
+        let unpacker = EXT4Unpacker(blockSizeInBytes: ext4Size)
+        try unpacker.unpack(archive: flatTarPath, compression: .none, at: rootfsPath)
+        try? FileManager.default.removeItem(at: flatTarPath)
         print(styled("Rootfs unpacked", .dim), formatFileSize(rootfsPath))
 
         // 4. Locate kernel from system store
