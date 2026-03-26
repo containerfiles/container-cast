@@ -7,10 +7,14 @@ BOLD := \033[1m
 RESET := \033[0m
 
 # Config
+IMAGE_NAME := container-cast
 BIN_DIR := /usr/local/bin
 LIB_DIR := /usr/local/libexec/container-cast
 PLUGIN_DIR := /usr/local/libexec/container/plugins/cast
 COMPLETIONS_DIR := $(shell zsh -c 'for d in $${fpath}; do if [[ "$$d" == $(HOME)/* ]] && [[ -d "$$d" ]] && [[ -w "$$d" ]]; then echo "$$d"; exit 0; fi; done; echo "$(HOME)/Library/Application Support/com.apple.zsh/completions"')
+
+-include container.conf
+-include $(HOME)/Library/Application\ Support/com.containerfiles.$(IMAGE_NAME)/local.conf
 
 .DEFAULT_GOAL := help
 .PHONY: build install uninstall plugin unplug health clean rebuild test completions help
